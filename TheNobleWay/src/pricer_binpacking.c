@@ -92,6 +92,8 @@ SCIP_RETCODE addBranchingDecisionConss(
 
    int c;
 
+   SCIP_CONS* vbcons;
+   
    assert(scip != NULL);
    assert(subscip != NULL);
    assert(conshdlr != NULL);
@@ -128,11 +130,18 @@ SCIP_RETCODE addBranchingDecisionConss(
       {
          /* TODO: initialize the left hand side (lhs), the right hand side (rhs), and the variable bound coefficient
           *       (vbdcoef) for the case of "same" constraint" (the items are both in the packing or not)*/
+         lhs = 0;
+         rhs = 0;
+         vbdcoef = -1;
+
       }
       else if( type == DIFFER )
       {
          /* TODO: initialize the left hand side (lhs), the right hand side (rhs), and the variable bound coefficient
           *       (vbdcoef) for the case of "differ" constraint" (the items are not together in a packing) */
+         lhs = -SCIPinfinity(subscip);
+         rhs = 1;
+         vbdcoef = 1.;
       }
       else
       {
@@ -148,7 +157,11 @@ SCIP_RETCODE addBranchingDecisionConss(
        * - branching type DIFFER:  x1 + x2 <= 1 <=> -inf <= x1 + x2 <= 1
        *
        */
-
+      SCIPcreateConsVarbound(subscip,
+            &vbcons, "vb", vars[id1], vars[id2], vbdcoef, lhs, rhs,
+            TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE );
+      
+      SCIPaddCons(subscip, vbcons);
 
    }
 
@@ -304,6 +317,25 @@ SCIP_RETCODE initPricing(
     *   - create variables for the pricing problem and store them in the vars array
     *   - create knapsack constraint
     */
+
+   SCIPcreateConsKnapsack(subscip, &cons, "capacity", 0,
+      NULL, NULL, capacity, TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE,
+      FALSE, FALSE);
+
+   SCIPaddCons(subscip, cons);
+   
+   for(nvars=0; nvars<nitems;++nvars)
+   {
+      dual = SCIPgetDualsolSetppc(scip, conss[nvars]);
+
+      SCIPcreateVar(subscip, &var, "var", 0.0, 1.0, dual,
+            SCIP_VARTYPE_BINARY, TRUE, FALSE, NULL, NULL, NULL, NULL, NULL );
+
+      SCIPaddVar(subscip, var);
+      SCIPaddCoefKnapsack(subscip, cons, var, weights[nvars]);
+      vars[nvars] = var;
+   }
+
 
    /* add constraint of the branching decisions (Note that there are TODOs in this method) */
    SCIP_CALL( addBranchingDecisionConss(scip, subscip, vars, pricerdata->conshdlr) );
@@ -473,6 +505,7 @@ SCIP_DECL_PRICERREDCOST(pricerRedcostBinpacking)
 
    SCIP_CALL( SCIPallocMemoryArray(subscip, &vars, nitems) );
 
+   SCIPdebugMessage("   nitems: %d capacity: %"SCIP_LONGINT_FORMAT"  \n", nitems, capacity);
    /* initialization of the local pricing problem;
     * note that there are TODOs in this method!
     */
@@ -480,10 +513,12 @@ SCIP_DECL_PRICERREDCOST(pricerRedcostBinpacking)
 
    SCIPdebugMessage("solve pricer problem\n");
 
+   
    /* TODO: solve the pricing SCIP */
-
+   SCIPsolve(subscip); 
+   
    /* TODO: replace NULL with the  best solution of the pricing problem */
-   sol = NULL; 
+   sol = SCIPgetBestSol(subscip); 
       
    if( sol != NULL )
    {
@@ -511,9 +546,19 @@ SCIP_DECL_PRICERREDCOST(pricerRedcostBinpacking)
          SCIP_CALL( SCIPallocBufferArray(scip, &consids, nitems) );
 
          /* TODO: evaluate solution of the pricing problem */
+         int j;
+         for(j=0;j<nitems;++j)
+         {
+            if( SCIPgetSolVal(subscip,sol,vars[j]) > 0.5 )
+            {
+               consids[nconsids] = j;
+               nconsids++;
+            }
+         }
+
 
          /* TODO: replace FALSE with the check if we found a solution with negative reduced cost */
-         if( FALSE )
+         if( SCIPisGT(scip,SCIPgetSolOrigObj(subscip, sol),1.0) )
          {
             SCIP_VAR* var;
             SCIP_VARDATA* vardata;
@@ -521,10 +566,13 @@ SCIP_DECL_PRICERREDCOST(pricerRedcostBinpacking)
             SCIPdebug( SCIP_CALL( SCIPprintSol(subscip, sol, NULL, FALSE) ) );
 
             /* TODO: create variable data */
-            
+            SCIPvardataCreateBinpacking(scip, &vardata, consids, nconsids);
+
             /* TODO: create a variable */
-            
+            SCIPcreateVarBinpacking(scip, &var, "var", 1.0, FALSE, TRUE, vardata);
+
             /* TODO: add the new variable to the pricer store */
+            SCIPaddPricedVar(scip, var, 1.0);
             
             /* change the upper bound of the binary variable to lazy since the upper bound is already enforced due to
              * the objective function the set covering constraint; the reason for doing that is to avoid the bound
@@ -534,9 +582,15 @@ SCIP_DECL_PRICERREDCOST(pricerRedcostBinpacking)
             SCIP_CALL( SCIPchgVarUbLazy(scip, var, 1.0) );
             
             /* TODO: add the new variable to the corresponding set covering constraints */
+            int c;
+            for(c=0;c<nconsids;++c)   
+            {
+               SCIPaddCoefSetppc(scip, conss[consids[c]], var); 
+            }
             
             /* TODO: release the new variable such that SCIP takes care of it */
-            
+            SCIPreleaseVar(scip, &var);
+           
          }
          
          SCIPfreeBufferArray(scip, &consids);
